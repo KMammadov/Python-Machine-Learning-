@@ -1,0 +1,146 @@
+spaceship_titanic_path = kagglehub.competition_download('spaceship-titanic')
+
+print('Data source import complete.')
+
+
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+import sklearn.preprocessing as preprocessing
+from sklearn.impute import KNNImputer, SimpleImputer
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder
+from sklearn.model_selection import train_test_split, GridSearchCV
+from catboost import CatBoostClassifier
+import lightgbm as lgb
+from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay, accuracy_score
+
+train = pd.read_csv("/kaggle/input/spaceship-titanic/train.csv")
+test = pd.read_csv("/kaggle/input/spaceship-titanic/test.csv")
+
+display(train.head())
+train.info()
+
+display(test.head())
+test.info()
+
+train.set_index("PassengerId", inplace = True)
+test.set_index("PassengerId", inplace=True)
+
+def cabin(df):
+    df[['Deck','Cabinno','Side']] = df['Cabin'].str.split("/", expand = True)
+    df.drop('Cabin',axis = 1, inplace = True)
+    return df
+
+
+train_new = cabin(train)
+test_new = cabin(test)
+
+train_new.drop(['Name','HomePlanet','Cabinno'], axis=1,inplace = True)
+test_new.drop(['Name','HomePlanet','Cabinno'], axis=1,inplace = True)
+
+
+train_new.isnull().sum()
+
+test_new.isnull().sum()
+
+mode_imp = SimpleImputer(strategy="most_frequent")
+mean_imp = SimpleImputer(strategy="mean")
+
+mode_cols = ['Destination', "Side", "Deck", "CryoSleep","VIP"]
+train_new[mode_cols] = mode_imp.fit_transform(train_new[mode_cols].values)
+
+train_new['Age'] = mean_imp.fit_transform(train_new['Age'].values.reshape(-1,1)).flatten()
+
+exp = ['RoomService','FoodCourt', 'ShoppingMall', 'Spa', 'VRDeck']
+imputer = KNNImputer()
+imputer.fit(train_new[exp])
+train_new[exp] = imputer.transform(train_new[exp])
+
+train_new['Expenditure'] = train_new[exp].sum(axis=1)
+train_new.loc[(train_new['CryoSleep'].isnull() & train_new['Expenditure'] > 0), 'CryoSleep'] = False
+
+train_new.isnull().sum()
+
+mode_imp = SimpleImputer(strategy="most_frequent")
+mean_imp = SimpleImputer(strategy="mean")
+
+mode_cols = ['Destination', "Side", "Deck", "CryoSleep","VIP"]
+test_new[mode_cols] = mode_imp.fit_transform(test_new[mode_cols].values)
+
+test_new['Age'] = mean_imp.fit_transform(test_new['Age'].values.reshape(-1,1)).flatten()
+
+exp = ['RoomService','FoodCourt', 'ShoppingMall', 'Spa', 'VRDeck']
+imputer = KNNImputer()
+imputer.fit(test_new[exp])
+test_new[exp] = imputer.transform(test_new[exp])
+
+test_new['Expenditure'] = test_new[exp].sum(axis=1)
+test_new.loc[(train_new['CryoSleep'].isnull() & test_new['Expenditure'] > 0), 'CryoSleep'] = False
+
+test_new.isnull().sum()
+
+le = preprocessing.LabelEncoder()
+
+# One Hot Encoding
+
+def converting_column(df,col,convertType):
+    if convertType=='OHE':
+        one_hot = pd.get_dummies(df[col],prefix=col)
+        df = df.drop(col,axis = 1)
+        df = df.join(one_hot)
+        return df
+    else:
+        df[col] = le.fit_transform(df[col])
+        return df
+
+train_new = converting_column(train_new,'Destination','FTR')
+test_new = converting_column(test_new,'Destination','FTR')
+train_new = converting_column(train_new,'CryoSleep','FTR')
+test_new = converting_column(test_new,'CryoSleep','FTR')
+train_new = converting_column(train_new,'VIP','FTR')
+test_new = converting_column(test_new,'VIP','FTR')
+
+train_new['Deck'] = le.fit_transform(train_new['Deck'])
+train_new['Side'] = le.fit_transform(train_new['Side'])
+test_new['Deck'] = le.fit_transform(test_new['Deck'])
+test_new['Side'] = le.fit_transform(test_new['Side'])
+
+train_new.info()
+
+test_new.info()
+
+x = train_new.drop("Transported", axis = 1)
+y = train_new["Transported"]
+
+x_train, x_test, y_train, y_test = train_test_split(x,y,test_size=0.2, random_state = 82)
+
+y_test = y_test.astype(int)
+y_train = y_train.astype(int)
+
+cat = CatBoostClassifier(verbose = 0, random_state = 82)
+parameters = {'iterations': [200],
+              'learning_rate': [0.1],
+              'depth': [5]}
+
+clf = GridSearchCV(cat, parameters, cv=100)
+clf.fit(x_train, y_train)
+
+print("Best parameters:", clf.best_params_)
+print("Best score:", clf.best_score_)
+
+print("score on test: " + str(clf.score(x_test, y_test)))
+print("score on train: "+ str(clf.score(x_train, y_train)))
+
+y_pred = clf.predict(x_test)
+cm = confusion_matrix(y_test, y_pred)
+print("Confusion Matrix:")
+print(cm)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm)
+disp.plot()
+plt.show()
+
+print("Classification Report:")
+print(classification_report(y_test, y_pred))
+
+predictions = clf.predict(test_new)
